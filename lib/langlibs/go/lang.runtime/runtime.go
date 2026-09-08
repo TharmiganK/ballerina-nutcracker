@@ -17,7 +17,6 @@
 package langruntime
 
 import (
-	"fmt"
 	"time"
 
 	"github.com/ballerina-nutcracker/ballerina/decimal"
@@ -32,10 +31,7 @@ const (
 )
 
 func runtimeSleep(ctx *extern.Context, args []values.BalValue) (values.BalValue, error) {
-	seconds, ok := args[0].(*decimal.Decimal)
-	if !ok {
-		panic(fmt.Sprintf("internal error: unexpected seconds type %T", args[0]))
-	}
+	seconds := args[0].(*decimal.Decimal)
 	dur := time.Duration(seconds.Float64() * float64(time.Second))
 	deadline := ctx.Env.Platform.Time.MonotonicNow() + dur
 	// Hand the thread back on every pass, the same way the wait actions poll
