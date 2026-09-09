@@ -18,13 +18,13 @@ in each package's support table (Supported + Partially Supported + Not Yet Suppo
 | [io](io/0.0.1/go1.26/README.md)                   | 21 | 2 | 4 | 78% |
 | [log](log/0.0.1/go1.26/README.md)                 | 7 | 2 | 15 | 29% |
 | [math.vector](math.vector/0.0.1/go1.26/README.md) | 5 | 0 | 0 | 100% |
-| [mime](mime/0.0.1/go1.26/README.md)                | 13 | 2 | 1 | 81% |
+| [mime](mime/0.0.1/go1.26/README.md)                | 15 | 2 | 0 | 88% |
 | [os](os/0.0.1/go1.26/README.md)                   | 11 | 1 | 0 | 92% |
 | [protobuf](protobuf/0.0.1/go1.26/README.md)       | 11 | 2 | 0 | 85% |
 | [random](random/0.0.1/go1.26/README.md)           | 3 | 1 | 1 | 60% |
 | [time](time/0.0.1/go1.26/README.md)               | 31 | 1 | 0 | 97% |
 | [url](url/0.0.1/go1.26/README.md)                 | 3 | 0 | 1 | 75% |
-| **Total**                                         | **174** | **20** | **65** | **67%** |
+| **Total**                                         | **176** | **20** | **64** | **68%** |
 
 ## Notable Behavioural Changes
 
