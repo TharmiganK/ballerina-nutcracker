@@ -15,12 +15,13 @@ Support % is computed as `round(Supported / Total * 100)`, where *Total* is the 
 | [io](../../lib/stdlibs/ballerina/io/0.0.1/go1.27/README.md)                   | 19 | 4 | 4 | 70% |
 | [log](../../lib/stdlibs/ballerina/log/0.0.1/go1.27/README.md)                 | 7 | 2 | 15 | 29% |
 | [math.vector](../../lib/stdlibs/ballerina/math.vector/0.0.1/go1.27/README.md) | 5 | 0 | 0 | 100% |
+| [mime](../../lib/stdlibs/ballerina/mime/0.0.1/go1.27/README.md)               | 13 | 2 | 1 | 81% |
 | [os](../../lib/stdlibs/ballerina/os/0.0.1/go1.27/README.md)                   | 11 | 1 | 0 | 92% |
 | [protobuf](../../lib/stdlibs/ballerina/protobuf/0.0.1/go1.27/README.md)       | 11 | 2 | 0 | 85% |
 | [random](../../lib/stdlibs/ballerina/random/0.0.1/go1.27/README.md)           | 3 | 1 | 1 | 60% |
 | [time](../../lib/stdlibs/ballerina/time/0.0.1/go1.27/README.md)               | 29 | 3 | 0 | 91% |
 | [url](../../lib/stdlibs/ballerina/url/0.0.1/go1.27/README.md)                 | 3 | 0 | 1 | 75% |
-| **Total**                                         | **178** | **22** | **64** | **67%** |
+| **Total**                                         | **191** | **24** | **65** | **68%** |
 
 ## Notable Behavioural Changes
 
@@ -72,6 +73,10 @@ Consolidated from each package's README. Only permanent, architectural Go-level 
 
 - **Module name always empty.** jBallerina uses JVM `StackWalker` to detect the calling module name at runtime; the Go-native version has no equivalent mechanism, so `module=""` in all log records.
 - **Error field format.** jBallerina serialises a full `FullErrorDetails` record (message, stack trace, cause chain) for the `error` field; the Go-native version formats the error as `error("message")` using the Ballerina `toBalString` representation of the error value.
+
+### mime
+
+- **A missing multipart boundary is a `ParserError`, not a silent empty array.** jBallerina's `getBodyParts()` only ever decodes from a byte-channel data source set internally by the HTTP transport for an inbound request/response; a manually-constructed `Entity` (via `setByteArray`) has a plain byte-array data source instead, so `getBodyParts()` silently returns an empty `Entity[]` rather than decoding or erroring — jBallerina has no public API that decodes an arbitrary `byte[]` as multipart at all. This port has one representation for an `Entity`'s body regardless of how it was constructed, so it always attempts to decode a composite (`multipart/*` or `message/*`) byte-array body and surfaces a missing boundary as a `ParserError` — the more debuggable choice, and unavoidable given this port lets a manually-constructed `Entity` decode multipart content at all (which jBallerina's public API cannot exercise).
 
 ### os
 
