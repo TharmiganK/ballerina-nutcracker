@@ -4654,7 +4654,7 @@ func (n *nodeBuilder) transformEnumDeclaration(enumDeclarationNode *st.EnumDecla
 	if metadata := enumDeclarationNode.Metadata(); metadata != nil && !metadata.IsMissing() {
 		documentation = n.createMarkdownDocumentationAttachment(getDocumentationString(metadata))
 	}
-	var flags model.Flag
+	flags := model.FlagEnum
 	if publicQualifier {
 		flags |= model.FlagPublic
 	}
@@ -4699,7 +4699,7 @@ func (n *nodeBuilder) transformEnumMemberWithVisibility(enumMemberNode *st.EnumM
 	if publicQualifier {
 		flags |= model.FlagPublic
 	}
-	constantNode := ast.NewBLangVariable(n.getPositionWithoutMetadata(enumMemberNode), identifier, stringType, expr, false, flags|model.FlagConstant)
+	constantNode := ast.NewBLangVariable(n.getPositionWithoutMetadata(enumMemberNode), identifier, stringType, expr, false, flags|model.FlagConstant|model.FlagEnumMember)
 	constantNode.SetPosition(n.getPositionWithoutMetadata(enumMemberNode))
 	metadata := enumMemberNode.Metadata()
 	if metadata != nil && !metadata.IsMissing() {
