@@ -1494,6 +1494,9 @@ func (p *PrettyPrinter) printConstant(node *BLangVariable) {
 	p.StartNode()
 	p.PrintString("const")
 	p.PrintString(node.Name.GetValue())
+	if node.Flags().Has(model.FlagEnumMember) {
+		p.PrintString("enum-member")
+	}
 
 	// Print markdown documentation if present
 	if node.MarkdownDocumentationAttachment != nil {
@@ -2060,6 +2063,9 @@ func (p *PrettyPrinter) printTypeDefinition(node *BLangTypeDefinition) {
 	p.PrintString("type-definition")
 	if node.Name != nil {
 		p.PrintString(node.Name.GetValue())
+	}
+	if node.IsEnum() {
+		p.PrintString("enum")
 	}
 	p.indentLevel++
 	p.printAnnotationAttachments(node)

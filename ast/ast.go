@@ -341,6 +341,7 @@ func (b *classDefnBase) Flags() model.Flag { return b.flags }
 func (b *BLangTypeDefinition) IsPublic() bool    { return b.flags.Has(model.FlagPublic) }
 func (b *BLangTypeDefinition) IsAnonymous() bool { return b.flags.Has(model.FlagAnonymous) }
 func (b *BLangTypeDefinition) IsDistinct() bool  { return b.flags.Has(model.FlagDistinct) }
+func (b *BLangTypeDefinition) IsEnum() bool      { return b.flags.Has(model.FlagEnum) }
 func (b *BLangAnnotation) IsPublic() bool        { return b.flags.Has(model.FlagPublic) }
 func (b *BLangAnnotation) IsConst() bool         { return b.flags.Has(model.FlagConstant) }
 
