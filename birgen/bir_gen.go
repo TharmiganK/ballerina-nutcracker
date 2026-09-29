@@ -1695,8 +1695,7 @@ func materializeFiller(ctx context, bb *bir.BIRBasicBlock, ty semtypes.SemType, 
 		return operand, bb, true
 	case semtypes.MappingFiller:
 		operand := ctx.addTempVar(f.Type)
-		mapReadonly := semtypes.IsSubtype(tyCx, f.Type, semtypes.ValReadonly)
-		bb.Instructions = append(bb.Instructions, bir.NewMapConstructor(f.Type, operand, nil, nil, mapReadonly, pos))
+		bb.Instructions = append(bb.Instructions, bir.NewMapConstructor(f.Type, operand, nil, nil, f.Readonly, pos))
 		return operand, bb, true
 	case semtypes.ListFiller:
 		memberOperands := make([]*bir.BIROperand, len(f.Members))
@@ -1711,8 +1710,7 @@ func materializeFiller(ctx context, bb *bir.BIRBasicBlock, ty semtypes.SemType, 
 		bb.Instructions = append(bb.Instructions, bir.NewConstantLoad(sizeOperand, int64(len(memberOperands)), pos))
 		restFiller, _ := values.FillerFactoryFor(tyCx, f.Atomic.Rest())
 		operand := ctx.addTempVar(f.Type)
-		listReadonly := semtypes.IsSubtype(tyCx, f.Type, semtypes.ValReadonly)
-		bb.Instructions = append(bb.Instructions, bir.NewArrayConstructor(f.Type, operand, sizeOperand, memberOperands, restFiller, listReadonly, pos))
+		bb.Instructions = append(bb.Instructions, bir.NewArrayConstructor(f.Type, operand, sizeOperand, memberOperands, restFiller, f.Readonly, pos))
 		return operand, bb, true
 	case semtypes.TableFiller, semtypes.ObjectFiller, semtypes.StreamFiller, semtypes.XMLFiller:
 		ctx.unimplemented(fmt.Sprintf("filler materialization not implemented for %T", f), sourcePos)
@@ -1783,15 +1781,11 @@ func assignmentContainerReference(ctx context, bb *bir.BIRBasicBlock, expr ast.B
 	containerType := semtypes.Diff(inner.Expr.GetDeterminedType(), semtypes.Nil)
 	tyCtx := ctx.function().pkgCtx.typeContext()
 	var fillingKind bir.InstructionKind
-	var filler values.FillerFactory
 	switch {
 	case semtypes.IsSubtype(tyCtx, containerType, semtypes.List):
 		fillingKind = bir.InstructionKindArrayFillingLoad
 	case semtypes.IsSubtype(tyCtx, containerType, semtypes.Mapping):
 		fillingKind = bir.InstructionKindMapFillingLoad
-		tyCx := semtypes.TypeCheckContext(ctx.typeEnv())
-		valueType := semtypes.MappingMemberTypeInnerVal(tyCx, containerType, semtypes.String)
-		filler, _ = values.FillerFactoryFor(tyCx, valueType)
 	default:
 		return handleActionOrExpression(ctx, bb, expr)
 	}
@@ -1805,7 +1799,6 @@ func assignmentContainerReference(ctx context, bb *bir.BIRBasicBlock, expr ast.B
 		return containerRefEffect, false
 	}
 	fieldAccess := bir.NewFieldAccess(fillingKind, resultOperand, indexEffect.result, containerRefEffect.result, ctx.function().loc(inner.GetPosition()))
-	fieldAccess.Filler = filler
 	containerRefEffect.block.Instructions = append(containerRefEffect.block.Instructions, fieldAccess)
 	return expressionEffect{result: resultOperand,
 		block: containerRefEffect.block,
