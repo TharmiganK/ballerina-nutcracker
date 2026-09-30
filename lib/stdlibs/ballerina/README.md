@@ -14,7 +14,7 @@ in each package's support table (Supported + Partially Supported + Not Yet Suppo
 |---------------------------------------------------|---|---|---|---|
 | [avro](avro/0.0.1/go1.27/README.md)               | 15 | 1 | 0 | 94% |
 | [crypto](crypto/0.0.1/go1.27/README.md)           | 26 | 1 | 5 | 81% |
-| [file](file/0.0.1/go1.26/README.md)               | 21 | 0 | 0 | 100% |
+| [file](file/0.0.1/go1.27/README.md)               | 21 | 0 | 0 | 100% |
 | [http](http/0.0.1/go1.27/README.md)               | 28 | 7 | 38 | 38% |
 | [io](io/0.0.1/go1.27/README.md)                   | 21 | 2 | 4 | 78% |
 | [log](log/0.0.1/go1.27/README.md)                 | 7 | 2 | 15 | 29% |
