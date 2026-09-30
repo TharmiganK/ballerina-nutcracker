@@ -1,6 +1,6 @@
 (package
   (import-package ballerina io (as io))
-  (type-definition Color
+  (type-definition Color enum
     (union-type
       (union-type
         (user-defined-type RED)

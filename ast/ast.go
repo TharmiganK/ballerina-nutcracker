@@ -271,6 +271,7 @@ type (
 
 // bLangInvokableNodeBase flag methods
 func (b *bLangInvokableNodeBase) IsPublic() bool        { return b.flags.Has(model.FlagPublic) }
+func (b *bLangInvokableNodeBase) IsPrivate() bool       { return b.flags.Has(model.FlagPrivate) }
 func (b *bLangInvokableNodeBase) IsRemote() bool        { return b.flags.Has(model.FlagRemote) }
 func (b *bLangInvokableNodeBase) IsTransactional() bool { return b.flags.Has(model.FlagTransactional) }
 func (b *bLangInvokableNodeBase) IsResource() bool      { return b.flags.Has(model.FlagResource) }
@@ -312,6 +313,7 @@ func (b *bLangInvokableNodeBase) ReturnType() TypeDescriptor {
 
 // bLangVariableBase flag methods
 func (b *bLangVariableBase) IsPublic() bool           { return b.flags.Has(model.FlagPublic) }
+func (b *bLangVariableBase) IsPrivate() bool          { return b.flags.Has(model.FlagPrivate) }
 func (b *bLangVariableBase) IsFinal() bool            { return b.flags.Has(model.FlagFinal) }
 func (b *bLangVariableBase) IsConfigurable() bool     { return b.flags.Has(model.FlagConfigurable) }
 func (b *bLangVariableBase) IsDefaultableParam() bool { return b.flags.Has(model.FlagDefaultableParam) }
@@ -341,6 +343,7 @@ func (b *classDefnBase) Flags() model.Flag { return b.flags }
 func (b *BLangTypeDefinition) IsPublic() bool    { return b.flags.Has(model.FlagPublic) }
 func (b *BLangTypeDefinition) IsAnonymous() bool { return b.flags.Has(model.FlagAnonymous) }
 func (b *BLangTypeDefinition) IsDistinct() bool  { return b.flags.Has(model.FlagDistinct) }
+func (b *BLangTypeDefinition) IsEnum() bool      { return b.flags.Has(model.FlagEnum) }
 func (b *BLangAnnotation) IsPublic() bool        { return b.flags.Has(model.FlagPublic) }
 func (b *BLangAnnotation) IsConst() bool         { return b.flags.Has(model.FlagConstant) }
 
@@ -1126,6 +1129,35 @@ func (b *BLangPackage) GetImports() []*BLangImportPackage {
 
 func (b *BLangPackage) AddImport(importPkg *BLangImportPackage) {
 	b.Imports = append(b.Imports, importPkg)
+}
+
+// AddImportIfAbsent adds an import unless the package already imports the same
+// organization and module, possibly under a different alias.
+func (b *BLangPackage) AddImportIfAbsent(importPkg *BLangImportPackage) {
+	for _, existing := range b.Imports {
+		if sameImportPackage(existing, importPkg) {
+			return
+		}
+	}
+	b.AddImport(importPkg)
+}
+
+func sameImportPackage(left, right *BLangImportPackage) bool {
+	identifierValue := func(identifier *BLangIdentifier) string {
+		if identifier == nil {
+			return ""
+		}
+		return identifier.GetValue()
+	}
+	if identifierValue(left.OrgName) != identifierValue(right.OrgName) || len(left.PkgNameComps) != len(right.PkgNameComps) {
+		return false
+	}
+	for i := range left.PkgNameComps {
+		if left.PkgNameComps[i].GetValue() != right.PkgNameComps[i].GetValue() {
+			return false
+		}
+	}
+	return true
 }
 
 func (b *BLangPackage) GetNamespaceDeclarations() []*BLangXMLNS {

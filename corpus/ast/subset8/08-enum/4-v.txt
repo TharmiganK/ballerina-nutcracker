@@ -1,16 +1,16 @@
 (compilation-unit
 (package-id $anon . 0.0.0)
   (import-package ballerina io (as io))
-  (const RED (
+  (const RED enum-member (
     (value-type string)) (
     (literal RED)))
-  (const GREEN (
+  (const GREEN enum-member (
     (value-type string)) (
     (literal green)))
-  (const BLUE (
+  (const BLUE enum-member (
     (value-type string)) (
     (literal BLUE)))
-  (type-definition Color
+  (type-definition Color enum
     (union-type
       (union-type
         (user-defined-type RED)

@@ -499,6 +499,11 @@ type (
 	DefaultableParam struct {
 		Symbol SymbolRef
 		Kind   DefaultableParamKind
+		// Scope owns the closure desugar generates for this default expression. It is
+		// allocated during symbol resolution so desugar, which runs concurrently, does
+		// not have to allocate symbol spaces. It is nil for signatures read from a
+		// symbol pool since those closures were desugared in their defining module.
+		Scope Scope
 	}
 
 	DefaultableParamInfo struct {
@@ -971,6 +976,18 @@ func (space *ExportedSymbolSpace) GetSymbol(name string) (SymbolRef, bool) {
 			return SymbolRef{}, false
 		}
 		return ref, true
+	}
+	return SymbolRef{}, false
+}
+
+// GetInternalSymbol is GetSymbol without the source visibility check. It is for
+// desugarings that call a langlib symbol the language spec does not expose to
+// source, such as the "$stepIndex" helper behind an indexed XML step.
+func (space *ExportedSymbolSpace) GetInternalSymbol(name string) (SymbolRef, bool) {
+	for _, main := range space.MainSpaces {
+		if ref, ok := main.GetSymbol(name); ok {
+			return ref, true
+		}
 	}
 	return SymbolRef{}, false
 }

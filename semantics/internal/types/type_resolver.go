@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -106,10 +107,26 @@ type typeResolver interface {
 	objectMethodTable(atom *semtypes.MappingAtomicType) (model.MethodTable, bool)
 	currentScope() model.Scope
 	setCurrentScope(scope model.Scope)
+	nextXMLStepFnName() string
 	nextMonoFnName(origName string) string
+	packageID() *model.PackageID
 
 	ensureNotEmpty(ty semtypes.SemType, onEmpty func()) bool
 	opaqueContext() *opaque.Context
+}
+
+type resolverContext uint8
+
+const (
+	resolverContextIsolated resolverContext = 1 << iota
+	resolverContextIsolatedXMLStep
+)
+
+func resolverContextForFunction(isolated bool) resolverContext {
+	if isolated {
+		return resolverContextIsolated
+	}
+	return 0
 }
 
 // deferredEmptinessCheck is an emptiness check that was registered while the
@@ -196,9 +213,10 @@ type packageTypeResolver struct {
 	typeDefnNodes         map[model.SymbolRef]*ast.BLangTypeDefinition
 	classDefnNodes        map[model.SymbolRef]*ast.BLangClassDefinition
 	monoCounters          map[string]int
+	xmlStepCounter        int
 	annotationGlobalCount int
 	scope                 model.Scope
-	isolatedContext       bool
+	context               resolverContext
 	// opaqueCtx is created on first use: most resolvers never monomorphize an opaque call.
 	opaqueCtx      *opaque.Context
 	ephemeralState ephemeralState
@@ -348,6 +366,25 @@ func (t *packageTypeResolver) objectMethodTable(atom *semtypes.MappingAtomicType
 func (t *packageTypeResolver) currentScope() model.Scope     { return t.scope }
 func (t *packageTypeResolver) setCurrentScope(s model.Scope) { t.scope = s }
 
+// moduleXMLStepOwner names module-level lowering contexts. It starts with `$`
+// so it can never clash with a user-written or generated function name.
+const moduleXMLStepOwner = "$module"
+
+// xmlStepFnPrefix starts the name of every function an XML step lowers to.
+const xmlStepFnPrefix = "$xmlStep$"
+
+func xmlStepFnName(owner string, idx int) string {
+	return fmt.Sprintf("%s%s$%d", xmlStepFnPrefix, owner, idx)
+}
+
+func (t *packageTypeResolver) nextXMLStepFnName() string {
+	idx := t.xmlStepCounter
+	t.xmlStepCounter++
+	return xmlStepFnName(moduleXMLStepOwner, idx)
+}
+
+func (t *packageTypeResolver) packageID() *model.PackageID { return t.pkg.PackageID }
+
 func (t *packageTypeResolver) nextMonoFnName(origName string) string {
 	idx := t.monoCounters[origName]
 	t.monoCounters[origName] = idx + 1
@@ -393,8 +430,10 @@ type functionTypeResolver struct {
 	implicitImports      map[string]ast.BLangImportPackage
 	capturedNarrowedVars map[model.SymbolRef]bool
 	monoCounters         map[string]int
+	xmlStepOwner         string
+	xmlStepCounter       int
 	scope                model.Scope
-	isolatedContext      bool
+	context              resolverContext
 	// opaqueCtx is created on first use: most resolvers never monomorphize an opaque call.
 	opaqueCtx      *opaque.Context
 	ephemeralState *ephemeralState
@@ -577,32 +616,78 @@ func (f *functionTypeResolver) currentScope() model.Scope     { return f.scope }
 func (f *functionTypeResolver) setCurrentScope(s model.Scope) { f.scope = s }
 
 func isolatedContext(t typeResolver) bool {
+	return hasResolverContext(t, resolverContextIsolated)
+}
+
+func setIsolatedContext(t typeResolver, isolated bool) func() {
+	return setResolverContext(t, resolverContextIsolated, isolated)
+}
+
+func setIsolatedXMLStepContext(t typeResolver, isolated bool) func() {
+	return setResolverContext(t, resolverContextIsolatedXMLStep, isolated)
+}
+
+func isolatedXMLStepContext(t typeResolver) bool {
+	return hasResolverContext(t, resolverContextIsolatedXMLStep)
+}
+
+// opaqueCallIsolated reports whether an opaque call site must be monomorphized
+// as isolated. A record field's default expression is not a function, so the
+// surrounding context is not an isolated one, but the lambda an XML step lowers
+// to there is generated code that captures nothing mutable.
+func opaqueCallIsolated(t typeResolver, args []ast.BLangExpression) bool {
+	if isolatedContext(t) {
+		return true
+	}
+	return isolatedXMLStepContext(t) && slices.ContainsFunc(args, isGeneratedXMLStepLambda)
+}
+
+func isGeneratedXMLStepLambda(expr ast.BLangExpression) bool {
+	lambda, ok := expr.(*ast.BLangLambdaFunction)
+	return ok && lambda.Function.Name != nil && strings.HasPrefix(lambda.Function.Name.GetValue(), xmlStepFnPrefix)
+}
+
+func hasResolverContext(t typeResolver, flag resolverContext) bool {
 	for current := t; current != nil; current = current.parent() {
 		switch resolver := current.(type) {
 		case *functionTypeResolver:
-			return resolver.isolatedContext
+			return resolver.context&flag != 0
 		case *packageTypeResolver:
-			return resolver.isolatedContext
+			return resolver.context&flag != 0
 		}
 	}
 	return false
 }
 
-func setIsolatedContext(t typeResolver, isolated bool) func() {
+func setResolverContext(t typeResolver, flag resolverContext, enabled bool) func() {
 	for current := t; current != nil; current = current.parent() {
+		var contextFlags *resolverContext
 		switch resolver := current.(type) {
 		case *functionTypeResolver:
-			previous := resolver.isolatedContext
-			resolver.isolatedContext = isolated
-			return func() { resolver.isolatedContext = previous }
+			contextFlags = &resolver.context
 		case *packageTypeResolver:
-			previous := resolver.isolatedContext
-			resolver.isolatedContext = isolated
-			return func() { resolver.isolatedContext = previous }
+			contextFlags = &resolver.context
+		}
+		if contextFlags != nil {
+			previous := *contextFlags
+			if enabled {
+				*contextFlags |= flag
+			} else {
+				*contextFlags &^= flag
+			}
+			return func() { *contextFlags = previous }
 		}
 	}
 	return func() {}
 }
+
+func (f *functionTypeResolver) nextXMLStepFnName() string {
+	idx := f.xmlStepCounter
+	f.xmlStepCounter++
+	return xmlStepFnName(f.xmlStepOwner, idx)
+}
+
+func (f *functionTypeResolver) packageID() *model.PackageID { return f.parentResolver.packageID() }
 
 func (f *functionTypeResolver) nextMonoFnName(origName string) string {
 	idx := f.monoCounters[origName]
@@ -692,6 +777,17 @@ func (t *packageTypeResolver) ensureResolved(ref model.SymbolRef, depth int) boo
 func ResolvePublicNodes(ctx *context.CompilerContext, pkg *ast.BLangPackage, importedSymbols map[string]model.ExportedSymbolSpace) {
 	t := newPackageTypeResolver(ctx, pkg, importedSymbols, pkg.Scope)
 	t.resolveTopLevelTypes(pkg)
+	mergeImplicitImports(pkg, t.implicitImports)
+}
+
+// mergeImplicitImports appends the langlib imports the resolver added
+// implicitly. Iteration order is the map's, so the resulting slice order is not
+// stable; the pretty printers normalize import order when they print a package.
+func mergeImplicitImports(pkg *ast.BLangPackage, imports map[string]ast.BLangImportPackage) {
+	for name := range imports {
+		imp := imports[name]
+		pkg.AddImportIfAbsent(&imp)
+	}
 }
 
 // ResolvePrivateNodesTypes resolves the types private nodes within the package. Then can be executed concurrently
@@ -700,13 +796,14 @@ func ResolvePrivateNodes(ctx *context.CompilerContext, pkg *ast.BLangPackage, im
 	fns := common.PackageFunctionDecls(pkg)
 
 	allImports := make(map[string]ast.BLangImportPackage)
-	resolveFieldInitsInScope := func(scope model.Scope, fields []*ast.BLangVariable) {
+	resolveFieldInitsInScope := func(owner model.SymbolRef, scope model.Scope, fields []*ast.BLangVariable) {
 		ft := &functionTypeResolver{
 			atomSideTableBase: newAtomSideTableBase(),
 			parentResolver:    p,
 			tyCtx:             semtypes.ContextFrom(p.typeEnv()),
 			implicitImports:   make(map[string]ast.BLangImportPackage),
 			monoCounters:      make(map[string]int),
+			xmlStepOwner:      p.getSymbol(owner).Name(),
 			scope:             scope,
 			ephemeralState:    &ephemeralState{},
 		}
@@ -720,11 +817,11 @@ func ResolvePrivateNodes(ctx *context.CompilerContext, pkg *ast.BLangPackage, im
 	}
 	for i := range pkg.ClassDefinitions {
 		c := pkg.ClassDefinitions[i]
-		resolveFieldInitsInScope(c.Scope(), c.Fields)
+		resolveFieldInitsInScope(c.Symbol(), c.Scope(), c.Fields)
 	}
 	for i := range pkg.Services {
 		s := pkg.Services[i]
-		resolveFieldInitsInScope(s.Scope(), s.Fields)
+		resolveFieldInitsInScope(s.Symbol(), s.Scope(), s.Fields)
 	}
 
 	resolvers := make([]*functionTypeResolver, len(fns))
@@ -749,15 +846,7 @@ func ResolvePrivateNodes(ctx *context.CompilerContext, pkg *ast.BLangPackage, im
 		}
 		maps.Copy(allImports, t.implicitImports)
 	}
-	importNames := make([]string, 0, len(allImports))
-	for name := range allImports {
-		importNames = append(importNames, name)
-	}
-	sort.Strings(importNames)
-	for _, name := range importNames {
-		imp := allImports[name]
-		pkg.Imports = append(pkg.Imports, &imp)
-	}
+	mergeImplicitImports(pkg, allImports)
 }
 
 // isOpaqueFunctionDecl reports whether fn is the lang library source declaration of an
@@ -964,8 +1053,9 @@ func resolveFunctionBody(p *packageTypeResolver, fn common.FunctionDecl) *functi
 		tyCtx:             semtypes.ContextFrom(p.typeEnv()),
 		implicitImports:   make(map[string]ast.BLangImportPackage),
 		monoCounters:      make(map[string]int),
+		xmlStepOwner:      fnSym.Name(),
 		scope:             fn.Scope(),
-		isolatedContext:   fn.IsIsolated(),
+		context:           resolverContextForFunction(fn.IsIsolated()),
 		ephemeralState:    &ephemeralState{},
 	}
 	if !isPolymorphicFnSymbol(fnSym) {
@@ -1120,10 +1210,9 @@ func annotationTypeValid(t typeResolver, ty semtypes.SemType) bool {
 }
 
 // annotationMapType is map<Cloneable>. It is recomputed per call rather than
-// cached on the package resolver: the expensive part, CreateCloneable, is
-// already memoized in the semtype context, and caching on the shared resolver
-// would be a data race (local-node resolution runs many type resolvers
-// concurrently off the same package resolver).
+// cached on the package resolver: caching on the shared resolver would be a
+// data race (local-node resolution runs many type resolvers concurrently off
+// the same package resolver).
 func annotationMapType(t typeResolver) semtypes.SemType {
 	return semtypes.Intersect(semtypes.Mapping, semtypes.CreateCloneable(t.typeContext()))
 }
@@ -2297,8 +2386,9 @@ func resolveLambdaFunctionExpr(t typeResolver, chain *binding, e *ast.BLangLambd
 		retTy:             fnSym.TypedSignature().ReturnType,
 		implicitImports:   make(map[string]ast.BLangImportPackage),
 		monoCounters:      make(map[string]int),
+		xmlStepOwner:      fnSym.Name(),
 		scope:             e.Function.Scope(),
-		isolatedContext:   fnSym.TypedSignature().Flags&model.FuncSymbolFlagIsolated != 0,
+		context:           resolverContextForFunction(fnSym.TypedSignature().Flags&model.FuncSymbolFlagIsolated != 0),
 		ephemeralState:    resolverEphemeralState(t),
 	}
 
@@ -2404,8 +2494,9 @@ func resolveInferredLambdaFunctionExpr(t typeResolver, chain *binding, e *ast.BL
 		retTy:             expectedReturnTy,
 		implicitImports:   make(map[string]ast.BLangImportPackage),
 		monoCounters:      make(map[string]int),
+		xmlStepOwner:      fnSym.Name(),
 		scope:             e.Function.Scope(),
-		isolatedContext:   flags&model.FuncSymbolFlagIsolated != 0,
+		context:           resolverContextForFunction(flags&model.FuncSymbolFlagIsolated != 0),
 		ephemeralState:    resolverEphemeralState(t),
 	}
 	boundaryChain := &binding{flags: bindingFlagFunctionBoundary, prev: chain}
@@ -2868,12 +2959,14 @@ func createFieldDescriptor(name string, field ast.BField) model.FieldDescriptor 
 	if field.IsOptional() {
 		flags |= model.FieldDescriptorOptional
 	}
-	if field.DefaultExpr != nil {
+	if field.Default != nil {
 		flags |= model.FieldDescriptorHasDefault
 	}
 	fd := model.NewFieldDescriptor(name, flags, true)
 	fd.SetMemberType(field.Type.(ast.BLangNode).GetDeterminedType())
-	fd.DefaultFnRef = field.DefaultFnRef
+	if field.Default != nil {
+		fd.DefaultFnRef = field.Default.FnRef
+	}
 	return fd
 }
 
@@ -2892,9 +2985,9 @@ func resolveClassDefinitionType(t typeResolver, classDef *ast.BLangClassDefiniti
 	od := semtypes.NewObjectDefinition()
 	classDef.Definition = &od
 
-	semType, ok := finishResolveObjectDefinitionType(t, &od, classDef.Fields, classDef.Methods, classDef.ResourceMethods, classDef.InitFunction,
-		classDef.Inclusions, classDef.GetPosition(), depth, classDef.IsIsolated(), classDef.IsReadonly(), isClient, isService,
-		classDef.Symbol())
+	semType, ok := finishResolveObjectDefinitionType(t, &od, t.symbolName(classDef.Symbol()), classDef.Fields, classDef.Methods,
+		classDef.ResourceMethods, classDef.InitFunction, classDef.Inclusions, classDef.InclusionPositions, classDef.GetPosition(),
+		depth, classDef.IsIsolated(), classDef.IsReadonly(), isClient, isService, classDef.Symbol())
 	if !ok {
 		return semtypes.SemType{}, false
 	}
@@ -2959,8 +3052,9 @@ func resolveServiceType(t typeResolver, svc *ast.BLangService, depth int, attach
 
 	od := semtypes.NewObjectDefinition()
 	svc.Definition = &od
-	objectBodyTy, ok := finishResolveObjectDefinitionType(t, &od, svc.Fields, svc.Methods, svc.ResourceMethods, svc.InitFunction,
-		nil, svc.GetPosition(), depth, svc.IsIsolated(), false, false, true, model.SymbolRef{})
+	objectBodyTy, ok := finishResolveObjectDefinitionType(t, &od, t.symbolName(svc.Symbol()), svc.Fields, svc.Methods,
+		svc.ResourceMethods, svc.InitFunction, nil, nil, svc.GetPosition(), depth, svc.IsIsolated(), false, false, true,
+		model.SymbolRef{})
 	if !ok {
 		return false
 	}
@@ -2993,9 +3087,9 @@ func inferServiceType(listenerServiceTypes []semtypes.SemType) semtypes.SemType 
 	return serviceTy
 }
 
-func finishResolveObjectDefinitionType(t typeResolver, od *semtypes.ObjectDefinition, fields []*ast.BLangVariable,
+func finishResolveObjectDefinitionType(t typeResolver, od *semtypes.ObjectDefinition, owner string, fields []*ast.BLangVariable,
 	methods map[string]*ast.BLangFunction, resourceMethods []*ast.BLangResourceMethod, initFn *ast.BLangFunction, inclusions []model.SymbolRef,
-	pos diagnostics.Location, depth int, isIsolated, isReadonly, isClient, isService bool, distinctSymbol model.SymbolRef,
+	inclusionPositions []diagnostics.Location, pos diagnostics.Location, depth int, isIsolated, isReadonly, isClient, isService bool, distinctSymbol model.SymbolRef,
 ) (semtypes.SemType, bool) {
 	for _, field := range fields {
 		fieldTy, ok := resolveBType(t, field.TypeNode(), depth+1)
@@ -3032,12 +3126,12 @@ func finishResolveObjectDefinitionType(t typeResolver, od *semtypes.ObjectDefini
 		rm.Name.SetDeterminedType(semtypes.Never)
 	}
 
-	includedMembers, ok := collectObjectIncludedMembers(t, inclusions, pos, depth)
+	includedMembers, ok := collectObjectIncludedMembers(t, inclusions, inclusionPositions, pos, depth)
 	if !ok {
 		return semtypes.SemType{}, false
 	}
 
-	directMembers, ok := buildObjectDirectMembers(t, fields, methods, initFn, isClient, isService)
+	directMembers, ok := buildObjectDirectMembers(t, owner, fields, methods, initFn, isClient, isService)
 	if !ok {
 		return semtypes.SemType{}, false
 	}
@@ -3050,11 +3144,10 @@ func finishResolveObjectDefinitionType(t typeResolver, od *semtypes.ObjectDefini
 	return defineObjectSemType(t, od, isIsolated, isReadonly, isClient, isService, members, distinctSymbol, inclusions), true
 }
 
-func collectObjectIncludedMembers(t typeResolver, inclusions []model.SymbolRef, pos diagnostics.Location, depth int) (map[string][]semtypes.Member, bool) {
+func collectObjectIncludedMembers(t typeResolver, inclusions []model.SymbolRef, positions []diagnostics.Location, pos diagnostics.Location, depth int) (map[string][]semtypes.Member, bool) {
 	includedMembers := make(map[string][]semtypes.Member)
-	incMembers, err := collectIncludedMembers(t, inclusions, depth)
-	if err {
-		t.semanticError("error resolving type inclusion", pos)
+	incMembers, ok := collectIncludedMembers(t, inclusions, positions, pos, depth)
+	if !ok {
 		return nil, false
 	}
 	for _, m := range incMembers {
@@ -3071,14 +3164,11 @@ func collectObjectIncludedMembers(t typeResolver, inclusions []model.SymbolRef, 
 	return includedMembers, true
 }
 
-func buildObjectDirectMembers(t typeResolver, fields []*ast.BLangVariable, methods map[string]*ast.BLangFunction, initFn *ast.BLangFunction, isClient bool, isService bool) ([]directMember, bool) {
+func buildObjectDirectMembers(t typeResolver, owner string, fields []*ast.BLangVariable, methods map[string]*ast.BLangFunction, initFn *ast.BLangFunction, isClient bool, isService bool) ([]directMember, bool) {
 	var directMembers []directMember
 	for _, field := range fields {
 		fieldTy := field.GetDeterminedType()
-		vis := semtypes.VisibilityPrivate
-		if field.IsPublic() {
-			vis = semtypes.VisibilityPublic
-		}
+		vis := memberVisibility(t, field.IsPublic(), privateOwner(field.IsPrivate(), owner))
 		directMembers = append(directMembers, directMember{
 			name:       field.Name.GetValue(),
 			valueTy:    fieldTy,
@@ -3098,10 +3188,8 @@ func buildObjectDirectMembers(t typeResolver, fields []*ast.BLangVariable, metho
 	for name := range methods {
 		method := methods[name]
 		methodTy := methodMemberType(t, method.Symbol())
-		vis := semtypes.VisibilityPrivate
-		if method.IsPublic() {
-			vis = semtypes.VisibilityPublic
-		}
+		vis := memberVisibility(t, method.IsPublic() || method.IsRemote() || method.IsResource(),
+			privateOwner(method.IsPrivate(), owner))
 		memberKind := semtypes.MemberKindMethod
 		if method.IsRemote() {
 			if !isClient && !isService {
@@ -3901,6 +3989,8 @@ func resolveExpressionInner(t typeResolver, chain *binding, expr ast.BLangAction
 		return resolved(resolveXMLTextLiteral(chain, e))
 	case *ast.BLangXMLFilterExpression:
 		return resolved(resolveXMLFilterExpr(t, chain, e, expectedType))
+	case *ast.BLangXMLStepExpression:
+		return resolved(resolveXMLStepExpr(t, chain, e, expectedType))
 	default:
 		t.internalError(fmt.Sprintf("unsupported expression type: %T", expr), expr.GetPosition())
 		return expressionResult{}, false
@@ -7019,17 +7109,31 @@ func resolveLangLibImport(t typeResolver, pkgName string, methodName string, exp
 	}
 	symbolRef, ok := symbolSpace.GetSymbol(methodName)
 	if !ok {
+		// Callers probe multiple lang libs and fall back to lang.value, so a miss
+		// here is not an error and must not register an implicit import.
 		return model.SymbolRef{}, ast.BLangIdentifier{}, false
 	}
-	basePos := expr.GetPosition()
+	return symbolRef, addImplicitLangLibImport(t, pkgName, expr.GetPosition()), true
+}
+
+func ensureLangLibImport(t typeResolver, pkgName string, pos diagnostics.Location) (model.ExportedSymbolSpace, ast.BLangIdentifier, bool) {
+	symbolSpace, ok := t.lookupImportedSymbols(pkgName)
+	if !ok {
+		t.internalError(fmt.Sprintf("%s symbol space not found", pkgName), pos)
+		return model.ExportedSymbolSpace{}, ast.BLangIdentifier{}, false
+	}
+	return symbolSpace, addImplicitLangLibImport(t, pkgName, pos), true
+}
+
+func addImplicitLangLibImport(t typeResolver, pkgName string, pos diagnostics.Location) ast.BLangIdentifier {
 	pkgAlias := ast.BLangIdentifier{Value: pkgName}
-	pkgAlias.SetPosition(basePos)
+	pkgAlias.SetPosition(pos)
 	if !t.hasImplicitImport(pkgName) {
 		moduleName := strings.TrimPrefix(pkgName, "lang.")
 		orgIdent := &ast.BLangIdentifier{Value: "ballerina"}
 		langIdent := ast.BLangIdentifier{Value: "lang"}
 		moduleIdent := ast.BLangIdentifier{Value: moduleName}
-		setPositions(basePos, orgIdent, &langIdent, &moduleIdent)
+		setPositions(pos, orgIdent, &langIdent, &moduleIdent)
 		importNode := ast.BLangImportPackage{
 			OrgName:      orgIdent,
 			PkgNameComps: []ast.BLangIdentifier{langIdent, moduleIdent},
@@ -7038,7 +7142,7 @@ func resolveLangLibImport(t typeResolver, pkgName string, methodName string, exp
 		setOtherNodesAsNever(&importNode)
 		t.addImplicitImport(pkgName, importNode)
 	}
-	return symbolRef, pkgAlias, true
+	return pkgAlias
 }
 
 func resolveFunctionCallArgs(t typeResolver, chain *binding, inv invocable, fnSymbol model.SymbolRef, expectedType semtypes.SemType) ([]semtypes.SemType, model.SymbolRef, *binding, bool) {
@@ -7119,7 +7223,7 @@ func resolveFunctionCallArgs(t typeResolver, chain *binding, inv invocable, fnSy
 		}
 
 		monoRef, ok := defn.Monomorphize(t.opaqueContext(), resolve, materialize, t.semanticError,
-			isolatedContext(t), inv.CallArgs(), expectedType, inv.GetPosition())
+			opaqueCallIsolated(t, inv.CallArgs()), inv.CallArgs(), expectedType, inv.GetPosition())
 		if !ok {
 			return nil, fnSymbol, chain, false
 		}
@@ -7958,11 +8062,14 @@ func resolveBTypeInner(t typeResolver, btype ast.BType, depth int) (semtypes.Sem
 				}
 				delete(result.includedFields, name)
 			}
-			if field.DefaultExpr != nil {
-				if _, ok := resolveActionOrExpression(t, nil, field.DefaultExpr, fieldTy); !ok {
+			if field.Default != nil {
+				restoreContext := setIsolatedXMLStepContext(t, true)
+				_, ok := resolveActionOrExpression(t, nil, field.Default.Expr, fieldTy)
+				restoreContext()
+				if !ok {
 					return semtypes.SemType{}, false
 				}
-				setRecordDefaultFnSignature(t, field.DefaultFnRef, fieldTy, field.GetPosition())
+				setRecordDefaultFnSignature(t, field.Default.FnRef, fieldTy, field.GetPosition())
 			}
 			ro := field.IsReadonly()
 			opt := field.IsOptional()
@@ -8083,9 +8190,8 @@ func resolveObjectType(t typeResolver, ty *ast.BLangObjectType, depth int, owner
 	ty.Definition = &od
 	// Step 1: Accumulate included members from symbols
 	includedMembers := make(map[string][]semtypes.Member)
-	incMembers, err := collectIncludedMembers(t, ty.Inclusions, depth)
-	if err {
-		t.semanticError("error resolving type inclusion", ty.GetPosition())
+	incMembers, ok := collectIncludedMembers(t, ty.Inclusions, ty.InclusionPositions, ty.GetPosition(), depth)
+	if !ok {
 		return semtypes.SemType{}, false
 	}
 	for _, m := range incMembers {
@@ -8121,9 +8227,9 @@ func resolveObjectType(t typeResolver, ty *ast.BLangObjectType, depth int, owner
 			name:       m.Name(),
 			valueTy:    valueTy,
 			kind:       kind,
-			visibility: semtypeVisibility(m.IsPublic()),
+			visibility: memberVisibility(t, isPublicObjectTypeMember(m), ""),
 			immutable:  m.MemberKind() != ast.ObjectMemberKindField,
-			pos:        ty.GetPosition(),
+			pos:        m.(ast.BLangNode).GetPosition(),
 		})
 	}
 
@@ -8206,7 +8312,7 @@ type directMember struct {
 	name       string
 	valueTy    semtypes.SemType
 	kind       semtypes.MemberKind
-	visibility semtypes.Visibility
+	visibility string
 	immutable  bool
 	pos        diagnostics.Location
 }
@@ -8219,6 +8325,17 @@ func validateOverridesAndMerge(t typeResolver, directMembers []directMember, inc
 				if incMember.Kind != dm.kind {
 					t.semanticError(
 						fmt.Sprintf("member '%s' conflicts with included member of different kind", dm.name),
+						dm.pos,
+					)
+					return nil, false
+				}
+				if incMember.Visibility != dm.visibility {
+					memberKind := "method"
+					if dm.kind == semtypes.MemberKindField {
+						memberKind = "field"
+					}
+					t.semanticError(
+						fmt.Sprintf("mismatched visibility qualifiers for %s '%s' with object type inclusion", memberKind, dm.name),
 						dm.pos,
 					)
 					return nil, false
@@ -8269,8 +8386,8 @@ func recordFieldDefaults(t typeResolver, recordTy *ast.BLangRecordType) []model.
 	var defaults []model.FieldDefault
 	for name, field := range recordTy.FieldPtrs() {
 		directFields[name] = true
-		if field.DefaultExpr != nil {
-			defaults = append(defaults, model.FieldDefault{FieldName: name, FnRef: field.DefaultFnRef})
+		if field.Default != nil {
+			defaults = append(defaults, model.FieldDefault{FieldName: name, FnRef: field.Default.FnRef})
 		}
 	}
 
@@ -8305,8 +8422,8 @@ func resolveRecordInclusions(t typeResolver, recordTy *ast.BLangRecordType, dept
 		}
 	}
 
-	incMembers, err := collectIncludedMembers(t, recordTy.Inclusions, depth)
-	if err {
+	incMembers, ok := collectIncludedMembers(t, recordTy.Inclusions, recordTy.InclusionPositions, recordTy.GetPosition(), depth)
+	if !ok {
 		return recordInclusionResolutionResult{}, false
 	}
 
@@ -8624,12 +8741,7 @@ func inclusionMemberToSemtypeMember(t typeResolver, m model.InclusionMember, loc
 	if !ok {
 		return semtypes.Member{}, false
 	}
-	vis := semtypes.VisibilityPrivate
-	if fd, ok := m.(*model.FieldDescriptor); ok {
-		vis = semtypeVisibility(fd.IsPublic())
-	} else if md, ok := m.(*model.MethodDescriptor); ok {
-		vis = semtypeVisibility(md.IsPublic())
-	}
+	vis := memberVisibility(t, isPublicInclusionMember(m), "")
 	return semtypes.Member{
 		Name:       m.MemberName(),
 		ValueType:  m.MemberType(),
@@ -8639,11 +8751,48 @@ func inclusionMemberToSemtypeMember(t typeResolver, m model.InclusionMember, loc
 	}, true
 }
 
-func semtypeVisibility(isPublic bool) semtypes.Visibility {
+// memberVisibility returns the visibility region of an object member. privateOwner is the name of the class or
+// service declaring a private member, and empty for every other member.
+func memberVisibility(t typeResolver, isPublic bool, privateOwner string) string {
 	if isPublic {
 		return semtypes.VisibilityPublic
 	}
-	return semtypes.VisibilityPrivate
+	pkgID := t.packageID()
+	modulePath := pkgID.OrgName.Value() + "/" + pkgID.Name.Value()
+	if privateOwner != "" {
+		return modulePath + ":" + privateOwner
+	}
+	return modulePath
+}
+
+func privateOwner(isPrivate bool, owner string) string {
+	if isPrivate {
+		return owner
+	}
+	return ""
+}
+
+// isPublicObjectTypeMember reports whether an object type descriptor member is in the public region. Remote
+// methods, resource methods and init are always public.
+func isPublicObjectTypeMember(m ast.ObjectMember) bool {
+	kind := m.MemberKind()
+	return m.IsPublic() || kind == ast.ObjectMemberKindRemoteMethod || kind == ast.ObjectMemberKindResourceMethod ||
+		(kind == ast.ObjectMemberKindMethod && m.Name() == "init")
+}
+
+// isPublicInclusionMember reports whether an included member is in the public region. Remote methods, resource
+// methods and init are always public.
+func isPublicInclusionMember(m model.InclusionMember) bool {
+	switch member := m.(type) {
+	case *model.FieldDescriptor:
+		return member.IsPublic()
+	case *model.MethodDescriptor:
+		kind := member.MemberKind()
+		return member.IsPublic() || kind == model.InclusionMemberKindRemoteMethod ||
+			kind == model.InclusionMemberKindResourceMethod || member.MemberName() == "init"
+	default:
+		return true
+	}
 }
 
 func semtypeNetworkQualifier(t typeResolver, nq ast.ObjectNetworkQuals, loc diagnostics.Location) (semtypes.NetworkQualifier, bool) {
@@ -8720,6 +8869,178 @@ func resolveXMLFilterExpr(t typeResolver, chain *binding, expr *ast.BLangXMLFilt
 	resultType := semtypes.XMLSequence(semtypes.XMLElement)
 	expr.SetDeterminedType(resultType)
 	return resultType, receiver.effect, true
+}
+
+func resolveXMLStepExpr(t typeResolver, chain *binding, expr *ast.BLangXMLStepExpression, expectedType semtypes.SemType) (semtypes.SemType, expressionEffect, bool) {
+	lowered := expr.LoweredExpression
+	if lowered == nil {
+		var ok bool
+		if lowered, ok = lowerXMLStepExpr(t, expr); !ok {
+			return semtypes.SemType{}, expressionEffect{}, false
+		}
+	}
+	result, ok := resolveActionOrExpression(t, chain, lowered, expectedType)
+	if !ok {
+		return semtypes.SemType{}, expressionEffect{}, false
+	}
+	expr.LoweredExpression = lowered
+	expr.SetDeterminedType(result.ty)
+	return result.ty, result.effect, true
+}
+
+func lowerXMLStepExpr(t typeResolver, expr *ast.BLangXMLStepExpression) (ast.BLangExpression, bool) {
+	pos := expr.GetPosition()
+	fnName := t.nextXMLStepFnName()
+	fnIdent := xmlStepIdentifier(fnName, pos)
+	paramName := "$xmlStepItem"
+	paramIdent := xmlStepIdentifier(paramName, pos)
+	param := ast.BLangVariable{}
+	param.SetName(paramIdent)
+	param.SetPosition(pos)
+	param.SetRequiredParam()
+
+	fnScope := t.compilerContext().NewFunctionScope(t.currentScope(), *t.packageID())
+	paramSymbol := model.NewVariableSymbol(paramName, false, false, true, pos)
+	fnScope.AddSymbol(paramName, &paramSymbol)
+	paramRef, _ := fnScope.GetSymbol(paramName)
+	param.SetSymbol(paramRef)
+	itemRef := &ast.BLangVarRef{VariableName: xmlStepIdentifier(paramName, pos)}
+	itemRef.SetSymbol(paramRef)
+	itemRef.SetPosition(pos)
+
+	var current ast.BLangExpression
+	var ok bool
+	switch expr.Start.Kind {
+	case ast.XMLStepStartKindAllChildren:
+		current, ok = newDirectLangXMLInvocation(t, "getChildren", []ast.BLangExpression{itemRef}, pos)
+	case ast.XMLStepStartKindElementChildren:
+		current, ok = newDirectLangXMLInvocation(t, "getChildren", []ast.BLangExpression{itemRef}, pos)
+		if ok {
+			current = newXMLStepFilter(current, expr.Start.NamePattern, expr.Start.GetPosition())
+		}
+	case ast.XMLStepStartKindElementDescendants:
+		current, ok = newDirectLangXMLInvocation(t, "getDescendants", []ast.BLangExpression{itemRef}, pos)
+		if ok {
+			current = newXMLStepFilter(current, expr.Start.NamePattern, expr.Start.GetPosition())
+		}
+	default:
+		t.internalError("unsupported XML step start kind", expr.Start.GetPosition())
+		return nil, false
+	}
+	if !ok {
+		return nil, false
+	}
+
+	for _, extension := range expr.Extensions {
+		switch extension := extension.(type) {
+		case *ast.BLangXMLStepFilterExtend:
+			current = newXMLStepFilter(current, extension.NamePattern, extension.GetPosition())
+		case *ast.BLangXMLStepIndexExtend:
+			current, ok = newDirectLangXMLInternalInvocation(t, "$stepIndex", []ast.BLangExpression{current, extension.Expression}, extension.GetPosition())
+		case *ast.BLangXMLStepMethodCallExtend:
+			invocation := &ast.BLangInvocation{}
+			invocation.Expr = current
+			invocation.PkgAlias = cloneXMLStepIdentifier(extension.Invocation.PkgAlias)
+			invocation.Name = cloneXMLStepIdentifier(extension.Invocation.Name)
+			invocation.ArgExprs = append([]ast.BLangExpression(nil), extension.Invocation.ArgExprs...)
+			invocation.SetPosition(extension.Invocation.GetPosition())
+			invocation.SetRawSymbol(common.NewDeferredMethodSymbol(invocation.Name.GetValue(), fnScope.MainSpace()))
+			current = invocation
+		default:
+			t.internalError(fmt.Sprintf("unsupported XML step extension type: %T", extension), extension.GetPosition())
+			return nil, false
+		}
+		if !ok {
+			return nil, false
+		}
+	}
+
+	body := &ast.BLangExprFunctionBody{Expr: current}
+	body.SetPosition(pos)
+	fn := ast.NewBLangFunction(ast.InvokableData{
+		Position:       pos,
+		Name:           fnIdent,
+		RequiredParams: []ast.BLangVariable{param},
+		Body:           body,
+		Flags:          model.FlagLambda | model.FlagAnonymous,
+	})
+	fn.SetScope(fnScope)
+	ownerSpace := t.currentScope().(model.SymbolSpaceProvider).MainSpace()
+	fnRef := t.createFunctionSymbol(ownerSpace, fnName, model.TypedFunctionSignature{}, semtypes.SemType{})
+	fn.SetSymbol(fnRef)
+	signatureRef := t.allocateFunctionSignature([]model.Param{{Name: paramName}}, false)
+	if !t.associateFunctionSignature(fnRef, signatureRef) {
+		t.internalError("function signature already set", pos)
+		return nil, false
+	}
+	lambda := &ast.BLangLambdaFunction{Function: fn}
+	lambda.SetInferredParams()
+	lambda.SetPosition(pos)
+
+	nilName := ast.NewBLangLiteral(pos, ast.LiteralKindNil, nil, "()", true)
+	elements, ok := newDirectLangXMLInvocation(t, "elements", []ast.BLangExpression{expr.Expression, nilName}, pos)
+	if !ok {
+		return nil, false
+	}
+	return newDirectLangXMLInvocation(t, "map", []ast.BLangExpression{elements, lambda}, pos)
+}
+
+func xmlStepIdentifier(value string, pos diagnostics.Location) *ast.BLangIdentifier {
+	ident := &ast.BLangIdentifier{Value: value, OriginalValue: value}
+	ident.SetPosition(pos)
+	return ident
+}
+
+func cloneXMLStepIdentifier(ident ast.IdentifierNode) ast.IdentifierNode {
+	if ident == nil {
+		return nil
+	}
+	return xmlStepIdentifier(ident.GetValue(), ident.GetPosition())
+}
+
+func newXMLStepFilter(expression ast.BLangExpression, patterns []ast.BLangAtomicNamePattern, pos diagnostics.Location) *ast.BLangXMLFilterExpression {
+	filter := &ast.BLangXMLFilterExpression{Expression: expression, NamePattern: patterns}
+	filter.SetPosition(pos)
+	return filter
+}
+
+func newDirectLangXMLInvocation(t typeResolver, name string, args []ast.BLangExpression, pos diagnostics.Location) (*ast.BLangInvocation, bool) {
+	space, pkgAlias, ok := ensureLangLibImport(t, "lang.xml", pos)
+	if !ok {
+		return nil, false
+	}
+	ref, ok := space.GetSymbol(name)
+	if !ok {
+		t.internalError("lang.xml symbol not found: "+name, pos)
+		return nil, false
+	}
+	return newResolvedXMLInvocation(ref, &pkgAlias, name, args, pos), true
+}
+
+// newDirectLangXMLInternalInvocation builds a call to a lang.xml symbol that is
+// not visible to Ballerina source, so it looks the symbol up without the
+// visibility check GetSymbol applies.
+func newDirectLangXMLInternalInvocation(t typeResolver, name string, args []ast.BLangExpression, pos diagnostics.Location) (*ast.BLangInvocation, bool) {
+	space, pkgAlias, ok := ensureLangLibImport(t, "lang.xml", pos)
+	if !ok {
+		return nil, false
+	}
+	ref, ok := space.GetInternalSymbol(name)
+	if !ok {
+		t.internalError("lang.xml internal symbol not found: "+name, pos)
+		return nil, false
+	}
+	return newResolvedXMLInvocation(ref, &pkgAlias, name, args, pos), true
+}
+
+func newResolvedXMLInvocation(ref model.SymbolRef, pkgAlias ast.IdentifierNode, name string, args []ast.BLangExpression, pos diagnostics.Location) *ast.BLangInvocation {
+	invocation := &ast.BLangInvocation{}
+	invocation.PkgAlias = pkgAlias
+	invocation.Name = xmlStepIdentifier(name, pos)
+	invocation.ArgExprs = args
+	invocation.SetSymbol(ref)
+	invocation.SetPosition(pos)
+	return invocation
 }
 
 func resolveAtomicNamePattern(pattern ast.BLangAtomicNamePattern) {
