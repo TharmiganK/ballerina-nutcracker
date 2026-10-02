@@ -15,10 +15,24 @@
 // under the License.
 
 import ballerina/io;
+
+import ballerina/io;
 import ballerina/uuid;
 
-public function main() {
-    // validate returns boolean, not assignable to int
-    int x = uuid:validate("anything"); // @error
-    io:println(x);
+public function main() returns error? {
+    error plain = error("not a uuid error");
+    io:println(plain is uuid:Error); // @output false
+
+    string|error r = uuid:toString({
+        timeLow: 1,
+        timeMid: 2,
+        timeHiAndVersion: 3,
+        clockSeqHiAndReserved: 4,
+        clockSeqLo: 5,
+        node: 0x1000000000000
+    });
+    io:println(r is uuid:Error); // @output true
+
+    uuid:Uuid rec = check uuid:createType1AsRecord();
+    io:println((rec.node >> 40) & 1); // @output 1
 }
