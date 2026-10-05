@@ -7,7 +7,7 @@ module, building on the language's new `stream` type, with client-side
 response data binding, XML payloads, and `anydata` resource returns for the
 `http` module, and the new `ballerina/protobuf` package, providing the protobuf
 well-known types (`Any`, `Struct`, `Timestamp`, `Duration`, `Empty`, and the
-scalar wrapper types) used by generated gRPC client/service code, and the new `ballerina/uuid` package, providing RFC 4122 UUID generation, validation, and conversion.
+scalar wrapper types) used by generated gRPC client/service code, the new `ballerina/uuid` package, providing RFC 4122 UUID generation, validation, and conversion, and the new `ballerina/task` package, providing one-time and recurring job scheduling and job management.
 
 ## [avro](https://github.com/ballerina-platform/module-ballerina-avro/blob/master/docs/spec/spec.md)
 
@@ -243,3 +243,19 @@ Predefined `NamespaceUUID` constants (`NAME_SPACE_DNS`, `NAME_SPACE_URL`,
 `NAME_SPACE_OID`, `NAME_SPACE_X500`, `NAME_SPACE_NIL`) are available for type
 3/5 generation. The `Uuid` record is `readonly` with `int:Unsigned32` /
 `int:Unsigned16` / `int:Unsigned8` fields, matching jBallerina's contract.
+
+## [task](https://github.com/ballerina-platform/module-ballerina-task/blob/master/docs/spec/spec.md)
+
+Scheduling of `task:Job` objects once or at a fixed interval, with the error and waiting policies and job management of jBallerina's Quartz-based scheduler.
+
+Types: `task:Job`, `task:JobId`, `task:TaskPolicy`, `task:ErrorPolicy`, `task:WaitingPolicy`, `task:Listener` (class), `task:Error`.
+
+| Function | Notes |
+|---|---|
+| `scheduleOneTimeJob(job, triggerTime)` | Runs the job once at a future `time:Civil`; a panic in `execute` is logged and ignored |
+| `scheduleJobRecurByFrequency(job, interval, maxCount?, startTime?, endTime?, taskPolicy?)` | Runs the job every `interval` seconds, optionally bounded by a count and a start/end window |
+| `pauseJob` / `resumeJob` / `pauseAllJobs` / `resumeAllJobs` | A resumed job applies its waiting policy to the runs it missed: `WAIT` fires them all, `IGNORE` and `LOG_AND_IGNORE` skip them |
+| `unscheduleJob` / `getRunningJobs` | Unscheduling the last job shuts the scheduler down; running jobs are listed in ascending id order |
+| `configureWorkerPool(workerCount?, waitingTime?)` | `waitingTime` is how late a run may be before the waiting policy treats it as missed |
+| `getTimeInMillies(time)` | Epoch milliseconds of a future `time:Civil` |
+| `new task:Listener(trigger = ...)`, `start` / `gracefulStop` / `immediateStop` | Listener lifecycle; attaching `task:Service` values, retry configuration and warm-backup task coordination are not yet supported |
