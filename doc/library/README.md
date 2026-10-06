@@ -15,13 +15,13 @@ Support % is computed as `round(Supported / Total * 100)`, where *Total* is the 
 | [io](../../lib/stdlibs/ballerina/io/0.0.1/go1.27/README.md)                   | 19 | 4 | 4 | 70% |
 | [log](../../lib/stdlibs/ballerina/log/0.0.1/go1.27/README.md)                 | 7 | 2 | 15 | 29% |
 | [math.vector](../../lib/stdlibs/ballerina/math.vector/0.0.1/go1.27/README.md) | 5 | 0 | 0 | 100% |
-| [mime](../../lib/stdlibs/ballerina/mime/0.0.1/go1.27/README.md)               | 16 | 1 | 0 | 94% |
+| [mime](../../lib/stdlibs/ballerina/mime/0.0.1/go1.27/README.md)               | 15 | 2 | 2 | 79% |
 | [os](../../lib/stdlibs/ballerina/os/0.0.1/go1.27/README.md)                   | 11 | 1 | 0 | 92% |
 | [protobuf](../../lib/stdlibs/ballerina/protobuf/0.0.1/go1.27/README.md)       | 11 | 2 | 0 | 85% |
 | [random](../../lib/stdlibs/ballerina/random/0.0.1/go1.27/README.md)           | 3 | 1 | 1 | 60% |
 | [time](../../lib/stdlibs/ballerina/time/0.0.1/go1.27/README.md)               | 29 | 3 | 0 | 91% |
 | [url](../../lib/stdlibs/ballerina/url/0.0.1/go1.27/README.md)                 | 3 | 0 | 1 | 75% |
-| **Total**                                         | **194** | **23** | **64** | **69%** |
+| **Total**                                         | **193** | **24** | **66** | **68%** |
 
 ## Notable Behavioural Changes
 
@@ -77,6 +77,9 @@ Consolidated from each package's README. Only permanent, architectural Go-level 
 ### mime
 
 - **A missing multipart boundary is a `ParserError`, not a silent empty array.** jBallerina's `getBodyParts()` only ever decodes from a byte-channel data source set internally by the HTTP transport for an inbound request/response; a manually-constructed `Entity` (via `setByteArray`) has a plain byte-array data source instead, so `getBodyParts()` silently returns an empty `Entity[]` rather than decoding or erroring — jBallerina has no public API that decodes an arbitrary `byte[]` as multipart at all. This port has one representation for an `Entity`'s body regardless of how it was constructed, so it always attempts to decode a composite (`multipart/*` or `message/*`) byte-array body and surfaces a missing boundary as a `ParserError` — the more debuggable choice, and unavoidable given this port lets a manually-constructed `Entity` decode multipart content at all (which jBallerina's public API cannot exercise).
+- **Invalid content type messages are not wrapped.** jBallerina's `getMediaType()` puts the string form of an inner error into the message, e.g. `error InvalidContentTypeError ("Unable to find a sub type.")`; the Go-native version returns the javax.activation parse message itself, e.g. `Unable to find a sub type.`.
+- **Content disposition parameter names are case-insensitive.** jBallerina only recognises lower-case `name` and `filename`, so `FORM-DATA; NAME="n"; FileName="f"` leaves both quoted in `parameters`, and `toString()` throws a Java `NullPointerException` for some unquoted values or values containing `;`; the Go-native version matches `name` and `filename` case-insensitively (as RFC 2183 specifies), unquotes them into the `name` and `fileName` fields, and never fails in `toString()`.
+- **A scalar JSON body can be read with `getJson()`.** jBallerina fails with a `ParserError` wrapping a Java `ClassCastException` when the body is a JSON scalar such as `12`; the Go-native version returns the scalar value.
 - **Parameter and header order is deterministic but not jBallerina's.** `MediaType.parameters` (and therefore `MediaType.toString()`) keeps the order the parameters appear in the source string; jBallerina's order follows Java `Hashtable` hashing. Headers of a decoded multipart part are added in sorted name order, since Go's multipart reader does not keep their wire order.
 
 ### os
