@@ -19,9 +19,9 @@ Support % is computed as `round(Supported / Total * 100)`, where *Total* is the 
 | [protobuf](../../lib/stdlibs/ballerina/protobuf/0.0.1/go1.27/README.md)       | 11 | 2 | 0 | 85% |
 | [random](../../lib/stdlibs/ballerina/random/0.0.1/go1.27/README.md)           | 3 | 1 | 1 | 60% |
 | [time](../../lib/stdlibs/ballerina/time/0.0.1/go1.27/README.md)               | 29 | 3 | 0 | 91% |
-| [udp](../../lib/stdlibs/ballerina/udp/0.0.1/go1.27/README.md)                 | 15 | 2 | 2 | 79% |
+| [udp](../../lib/stdlibs/ballerina/udp/0.0.1/go1.27/README.md)                 | 16 | 1 | 2 | 84% |
 | [url](../../lib/stdlibs/ballerina/url/0.0.1/go1.27/README.md)                 | 3 | 0 | 1 | 75% |
-| **Total**                                         | **193** | **24** | **66** | **68%** |
+| **Total**                                         | **194** | **23** | **66** | **69%** |
 
 ## Notable Behavioural Changes
 
