@@ -423,25 +423,21 @@ func initHttpModule(rt *runtime.Runtime) {
 
 	// msgToBody converts a Ballerina RequestMessage value to (io.Reader, contentLength, contentType).
 	msgToBody := func(tc semtypes.Context, msg values.BalValue) (io.Reader, int64, string) {
-		// An http:Request carries its own body and content-type; every other
-		// RequestMessage is serialised the same way a resource return value is. jBallerina
-		// uses the Request object as-is (http_commons.bal:97-99), so an absent Content-Type
-		// stays absent rather than being defaulted.
+		// An http:Request carries its own body, and outboundHeaders takes its content-type from
+		// the request's headers; every other RequestMessage is serialised the same way a resource
+		// return value is. jBallerina uses the Request object as-is (http_commons.bal:97-99), so
+		// an absent Content-Type stays absent rather than being defaulted.
 		if req, ok := msg.(*values.Object); ok {
-			ct := ""
-			if cts := rawRequestHeaders(req)["content-type"]; len(cts) > 0 {
-				ct = cts[0]
-			}
 			bodyVal, _ := req.Get("$body")
 			holder, ok := bodyVal.(*requestBodyHolder)
 			if !ok {
-				return bytes.NewReader([]byte{}), 0, ct
+				return bytes.NewReader([]byte{}), 0, ""
 			}
 			buf := holder.materialize()
 			if holder.readErr != nil {
 				return nil, 0, "json_error"
 			}
-			return bytes.NewReader(buf), int64(len(buf)), ct
+			return bytes.NewReader(buf), int64(len(buf)), ""
 		}
 		b, ct, err := outboundPayload(tc, &types, msg)
 		if err != nil {
@@ -458,7 +454,7 @@ func initHttpModule(rt *runtime.Runtime) {
 		var bodyReader io.Reader
 		var contentLength int64
 		contentType := ""
-		if len(args) > 2 && args[2] != nil {
+		if args[2] != nil {
 			var ct string
 			bodyReader, contentLength, ct = msgToBody(ctx.TypeCtx(), args[2])
 			if bodyReader == nil && ct == "json_error" {
@@ -466,12 +462,7 @@ func initHttpModule(rt *runtime.Runtime) {
 			}
 			contentType = ct
 		}
-		reqHeaders, contentType := outboundHeaders(args[2], contentType, args[3])
-		if len(args) > 4 {
-			if mt, ok := args[4].(string); ok && mt != "" {
-				contentType = mt
-			}
-		}
+		reqHeaders, contentType := outboundHeaders(args[2], contentType, args[3], args[4])
 		reqHeaders = applyCompressionHeaders(compressionModeOf(self), reqHeaders)
 		urlVal, _ := self.Get("url")
 		clientHandle, _ := self.Get("$httpClient")
@@ -874,7 +865,7 @@ func initHttpModule(rt *runtime.Runtime) {
 			var bodyReader io.Reader
 			var contentLength int64
 			contentType := ""
-			if len(args) > 3 && args[3] != nil {
+			if args[3] != nil {
 				var ct string
 				bodyReader, contentLength, ct = msgToBody(ctx.TypeCtx(), args[3])
 				if bodyReader == nil && ct == "json_error" {
@@ -882,12 +873,7 @@ func initHttpModule(rt *runtime.Runtime) {
 				}
 				contentType = ct
 			}
-			reqHeaders, contentType := outboundHeaders(args[3], contentType, args[4])
-			if len(args) > 5 {
-				if mt, ok := args[5].(string); ok && mt != "" {
-					contentType = mt
-				}
-			}
+			reqHeaders, contentType := outboundHeaders(args[3], contentType, args[4], args[5])
 			reqHeaders = applyCompressionHeaders(compressionModeOf(self), reqHeaders)
 			urlVal, _ := self.Get("url")
 			clientHandle, _ := self.Get("$httpClient")
@@ -1741,9 +1727,10 @@ func (d *deflateReadCloser) Close() error {
 
 // outboundHeaders builds the headers of a call that sends msg, following jBallerina's
 // populateOptions: an http:Request message keeps its own headers, any other message starts with
-// the payload's content type, and then a string value in headersArg replaces a header while a
-// string[] value is appended to it. Content-Type is returned separately, as the transport takes it.
-func outboundHeaders(msg values.BalValue, payloadContentType string, headersArg values.BalValue) (map[string][]string, string) {
+// the payload's content type, then a string value in headersArg replaces a header while a
+// string[] value is appended to it, and a non-empty mediaTypeArg wins over any Content-Type.
+// Content-Type is returned separately, as the transport takes it.
+func outboundHeaders(msg values.BalValue, payloadContentType string, headersArg, mediaTypeArg values.BalValue) (map[string][]string, string) {
 	headers := make(map[string][]string)
 	if req, ok := msg.(*values.Object); ok {
 		maps.Copy(headers, rawRequestHeaders(req))
@@ -1757,6 +1744,9 @@ func outboundHeaders(msg values.BalValue, payloadContentType string, headersArg 
 	contentType := ""
 	if cts := headers["content-type"]; len(cts) > 0 {
 		contentType = cts[len(cts)-1]
+	}
+	if mt, ok := mediaTypeArg.(string); ok && mt != "" {
+		contentType = mt
 	}
 	delete(headers, "content-type")
 	return headers, contentType
