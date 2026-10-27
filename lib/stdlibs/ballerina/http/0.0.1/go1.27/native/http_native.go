@@ -107,6 +107,20 @@ type httpTypes struct {
 	jsonListTy  semtypes.SemType
 	jsonMapTy   semtypes.SemType
 	mapStringTy semtypes.SemType
+
+	responseTyOnce sync.Once
+	responseTy     semtypes.SemType
+}
+
+// responseType returns the http:Response class type. A native cannot look up a class type by
+// name, so it is read off the declared Response|error return type of the client's head method.
+func (t *httpTypes) responseType(tc semtypes.Context, client *values.Object) semtypes.SemType {
+	t.responseTyOnce.Do(func() {
+		headTy := semtypes.ObjectMemberType(tc, semtypes.StringConst(model.RemoteMethodName("head")), client.Type)
+		retTy := semtypes.FunctionReturnType(tc, headTy, semtypes.FunctionParamListType(tc, headTy))
+		t.responseTy = semtypes.Intersect(retTy, semtypes.Object)
+	})
+	return t.responseTy
 }
 
 // 8 KB matches Netty's HttpObjectDecoder.maxChunkSize used by jBallerina's transport.
@@ -466,7 +480,7 @@ func initHttpModule(rt *runtime.Runtime) {
 		if err != nil {
 			return values.NewErrorWithMessage(err.Error()), nil
 		}
-		resp := buildResponse(ctx.TypeCtx(), statusCode, respHeaders, respBodyStream)
+		resp := buildResponse(ctx.TypeCtx(), types.responseType(ctx.TypeCtx(), self), statusCode, respHeaders, respBodyStream)
 		return bindResponse(ctx, &types, resp, args[5]), nil
 	}
 
@@ -787,7 +801,7 @@ func initHttpModule(rt *runtime.Runtime) {
 			if err != nil {
 				return values.NewErrorWithMessage(err.Error()), nil
 			}
-			resp := buildResponse(ctx.TypeCtx(), statusCode, respHeaders, respBodyStream)
+			resp := buildResponse(ctx.TypeCtx(), types.responseType(ctx.TypeCtx(), self), statusCode, respHeaders, respBodyStream)
 			return bindResponse(ctx, &types, resp, args[3]), nil
 		})
 
@@ -812,7 +826,7 @@ func initHttpModule(rt *runtime.Runtime) {
 			if err != nil {
 				return values.NewErrorWithMessage(err.Error()), nil
 			}
-			return buildResponse(ctx.TypeCtx(), statusCode, respHeaders, respBodyStream), nil
+			return buildResponse(ctx.TypeCtx(), types.responseType(ctx.TypeCtx(), self), statusCode, respHeaders, respBodyStream), nil
 		})
 
 	runtime.RegisterExternFunction(rt, orgName, moduleName, "Client.$remote$options",
@@ -831,7 +845,7 @@ func initHttpModule(rt *runtime.Runtime) {
 			if err != nil {
 				return values.NewErrorWithMessage(err.Error()), nil
 			}
-			resp := buildResponse(ctx.TypeCtx(), statusCode, respHeaders, respBodyStream)
+			resp := buildResponse(ctx.TypeCtx(), types.responseType(ctx.TypeCtx(), self), statusCode, respHeaders, respBodyStream)
 			return bindResponse(ctx, &types, resp, args[3]), nil
 		})
 
@@ -882,7 +896,7 @@ func initHttpModule(rt *runtime.Runtime) {
 			if err != nil {
 				return values.NewErrorWithMessage(err.Error()), nil
 			}
-			resp := buildResponse(ctx.TypeCtx(), statusCode, respHeaders, respBodyStream)
+			resp := buildResponse(ctx.TypeCtx(), types.responseType(ctx.TypeCtx(), self), statusCode, respHeaders, respBodyStream)
 			return bindResponse(ctx, &types, resp, args[6]), nil
 		})
 
@@ -939,7 +953,7 @@ func initHttpModule(rt *runtime.Runtime) {
 			if err != nil {
 				return values.NewErrorWithMessage(err.Error()), nil
 			}
-			resp := buildResponse(ctx.TypeCtx(), statusCode, respHeaders, respBodyStream)
+			resp := buildResponse(ctx.TypeCtx(), types.responseType(ctx.TypeCtx(), self), statusCode, respHeaders, respBodyStream)
 			return bindResponse(ctx, &types, resp, args[3]), nil
 		})
 
@@ -1816,7 +1830,7 @@ func responseMethodKeys() map[string]string { return responseMethodKeyCache }
 // All header values are stored as *values.List under the internal "$headers" key.
 // Content-Encoding (gzip/deflate) is transparently decoded, mirroring jBallerina's
 // Netty pipeline behaviour; the Content-Encoding header is removed from the response.
-func buildResponse(tc semtypes.Context, statusCode int, respHeaders map[string][]string, bodyStream io.ReadCloser) *values.Object {
+func buildResponse(tc semtypes.Context, responseTy semtypes.SemType, statusCode int, respHeaders map[string][]string, bodyStream io.ReadCloser) *values.Object {
 	bodyStream = decompressResponseBody(respHeaders, bodyStream)
 	headersMap := newMappingValue()
 	for k, vals := range respHeaders {
@@ -1828,7 +1842,7 @@ func buildResponse(tc semtypes.Context, statusCode int, respHeaders map[string][
 	}
 	holder := eagerBufferResponse(respHeaders, bodyStream)
 	return values.NewObject(
-		semtypes.Object,
+		responseTy,
 		map[string]values.BalValue{
 			"statusCode": int64(statusCode),
 			"$headers":   headersMap,
