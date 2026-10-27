@@ -24,7 +24,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -450,16 +452,7 @@ func initHttpModule(rt *runtime.Runtime) {
 			}
 			contentType = ct
 		}
-		var reqHeaders map[string][]string
-		if len(args) > 3 {
-			reqHeaders = extractHeaders(args[3])
-			for hdrKey, hdrVals := range reqHeaders {
-				if strings.EqualFold(hdrKey, "content-type") && len(hdrVals) > 0 {
-					contentType = hdrVals[0]
-					break
-				}
-			}
-		}
+		reqHeaders, contentType := outboundHeaders(args[2], contentType, args[3])
 		if len(args) > 4 {
 			if mt, ok := args[4].(string); ok && mt != "" {
 				contentType = mt
@@ -875,16 +868,7 @@ func initHttpModule(rt *runtime.Runtime) {
 				}
 				contentType = ct
 			}
-			var reqHeaders map[string][]string
-			if len(args) > 4 {
-				reqHeaders = extractHeaders(args[4])
-				for hdrKey, hdrVals := range reqHeaders {
-					if strings.EqualFold(hdrKey, "content-type") && len(hdrVals) > 0 {
-						contentType = hdrVals[0]
-						break
-					}
-				}
-			}
+			reqHeaders, contentType := outboundHeaders(args[3], contentType, args[4])
 			if len(args) > 5 {
 				if mt, ok := args[5].(string); ok && mt != "" {
 					contentType = mt
@@ -1739,6 +1723,47 @@ func (d *deflateReadCloser) Read(p []byte) (int, error) { return d.reader.Read(p
 func (d *deflateReadCloser) Close() error {
 	_ = d.reader.Close()
 	return d.underlying.Close()
+}
+
+// outboundHeaders builds the headers of a call that sends msg, following jBallerina's
+// populateOptions: an http:Request message keeps its own headers, any other message starts with
+// the payload's content type, and then a string value in headersArg replaces a header while a
+// string[] value is appended to it. Content-Type is returned separately, as the transport takes it.
+func outboundHeaders(msg values.BalValue, payloadContentType string, headersArg values.BalValue) (map[string][]string, string) {
+	headers := make(map[string][]string)
+	if req, ok := msg.(*values.Object); ok {
+		maps.Copy(headers, rawRequestHeaders(req))
+	} else if payloadContentType != "" {
+		headers["content-type"] = []string{payloadContentType}
+	}
+	if hdrMap, ok := headersArg.(*values.Map); ok {
+		mergeHeaderArgs(headers, hdrMap)
+	}
+	contentType := ""
+	if cts := headers["content-type"]; len(cts) > 0 {
+		contentType = cts[0]
+	}
+	delete(headers, "content-type")
+	return headers, contentType
+}
+
+func mergeHeaderArgs(headers map[string][]string, hdrMap *values.Map) {
+	for _, key := range hdrMap.Keys() {
+		name := strings.ToLower(key)
+		val, _ := hdrMap.Get(key)
+		switch v := val.(type) {
+		case string:
+			headers[name] = []string{v}
+		case *values.List:
+			// Cloned because rawRequestHeaders may share the inbound request's slices.
+			vals := slices.Clone(headers[name])
+			for i := range v.Len() {
+				s, _ := v.Get(i).(string)
+				vals = append(vals, s)
+			}
+			headers[name] = vals
+		}
+	}
 }
 
 // extractHeaders converts a Ballerina map<string|string[]>? value to Go request headers.
