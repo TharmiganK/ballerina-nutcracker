@@ -24,7 +24,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"maps"
 	"net/url"
 	"slices"
 	"strconv"
@@ -99,8 +98,8 @@ func init() {
 	runtime.RegisterModuleInitializer(initHttpModule)
 }
 
-// httpTypes holds the semtypes used by the http runtime. They are built once
-// in initHttpModule (single-threaded) and captured by the handler closures.
+// httpTypes holds the semtypes used by the http runtime. They are built once in initHttpModule and
+// captured by the handler closures; responseTy is filled lazily on the first client call.
 type httpTypes struct {
 	byteArrTy   semtypes.SemType
 	strArrTy    semtypes.SemType
@@ -119,6 +118,9 @@ func (t *httpTypes) responseType(tc semtypes.Context, client *values.Object) sem
 		headTy := semtypes.ObjectMemberType(tc, semtypes.StringConst(model.RemoteMethodName("head")), client.Type)
 		retTy := semtypes.FunctionReturnType(tc, headTy, semtypes.FunctionParamListType(tc, headTy))
 		t.responseTy = semtypes.Intersect(retTy, semtypes.Object)
+		if semtypes.IsEmpty(tc, t.responseTy) {
+			t.responseTy = semtypes.Object
+		}
 	})
 	return t.responseTy
 }
@@ -780,15 +782,12 @@ func initHttpModule(rt *runtime.Runtime) {
 		func(ctx *extern.Context, args []values.BalValue) (values.BalValue, error) {
 			self := args[0].(*values.Object)
 			path := args[1].(string)
-			var reqHeaders map[string][]string
-			if len(args) > 2 {
-				reqHeaders = extractHeaders(args[2])
-			}
+			reqHeaders, contentType := outboundHeaders(nil, "", args[2], nil)
 			reqHeaders = applyCompressionHeaders(compressionModeOf(self), reqHeaders)
 			urlVal, _ := self.Get("url")
 			clientHandle, _ := self.Get("$httpClient")
 			statusCode, respHeaders, respBodyStream, err := clientHandle.(pal.HTTPClient).Execute(
-				goCtxOrBackground(ctx), "GET", urlVal.(string)+path, nil, 0, "", reqHeaders)
+				goCtxOrBackground(ctx), "GET", urlVal.(string)+path, nil, 0, contentType, reqHeaders)
 			if err != nil {
 				return values.NewErrorWithMessage(err.Error()), nil
 			}
@@ -805,15 +804,12 @@ func initHttpModule(rt *runtime.Runtime) {
 		func(ctx *extern.Context, args []values.BalValue) (values.BalValue, error) {
 			self := args[0].(*values.Object)
 			path := args[1].(string)
-			var reqHeaders map[string][]string
-			if len(args) > 2 {
-				reqHeaders = extractHeaders(args[2])
-			}
+			reqHeaders, contentType := outboundHeaders(nil, "", args[2], nil)
 			reqHeaders = applyCompressionHeaders(compressionModeOf(self), reqHeaders)
 			urlVal, _ := self.Get("url")
 			clientHandle, _ := self.Get("$httpClient")
 			statusCode, respHeaders, respBodyStream, err := clientHandle.(pal.HTTPClient).Execute(
-				goCtxOrBackground(ctx), "HEAD", urlVal.(string)+path, nil, 0, "", reqHeaders)
+				goCtxOrBackground(ctx), "HEAD", urlVal.(string)+path, nil, 0, contentType, reqHeaders)
 			if err != nil {
 				return values.NewErrorWithMessage(err.Error()), nil
 			}
@@ -824,15 +820,12 @@ func initHttpModule(rt *runtime.Runtime) {
 		func(ctx *extern.Context, args []values.BalValue) (values.BalValue, error) {
 			self := args[0].(*values.Object)
 			path := args[1].(string)
-			var reqHeaders map[string][]string
-			if len(args) > 2 {
-				reqHeaders = extractHeaders(args[2])
-			}
+			reqHeaders, contentType := outboundHeaders(nil, "", args[2], nil)
 			reqHeaders = applyCompressionHeaders(compressionModeOf(self), reqHeaders)
 			urlVal, _ := self.Get("url")
 			clientHandle, _ := self.Get("$httpClient")
 			statusCode, respHeaders, respBodyStream, err := clientHandle.(pal.HTTPClient).Execute(
-				goCtxOrBackground(ctx), "OPTIONS", urlVal.(string)+path, nil, 0, "", reqHeaders)
+				goCtxOrBackground(ctx), "OPTIONS", urlVal.(string)+path, nil, 0, contentType, reqHeaders)
 			if err != nil {
 				return values.NewErrorWithMessage(err.Error()), nil
 			}
@@ -1731,11 +1724,15 @@ func (d *deflateReadCloser) Close() error {
 // string[] value is appended to it, and a non-empty mediaTypeArg wins over any Content-Type.
 // Content-Type is returned separately, as the transport takes it.
 func outboundHeaders(msg values.BalValue, payloadContentType string, headersArg, mediaTypeArg values.BalValue) (map[string][]string, string) {
-	headers := make(map[string][]string)
+	var headers map[string][]string
 	if req, ok := msg.(*values.Object); ok {
-		maps.Copy(headers, rawRequestHeaders(req))
-	} else if payloadContentType != "" {
-		headers["content-type"] = []string{payloadContentType}
+		headers = rawRequestHeaders(req)
+	}
+	if headers == nil {
+		headers = make(map[string][]string)
+		if payloadContentType != "" {
+			headers["content-type"] = []string{payloadContentType}
+		}
 	}
 	if hdrMap, ok := headersArg.(*values.Map); ok {
 		mergeHeaderArgs(headers, hdrMap)
@@ -1756,10 +1753,15 @@ func outboundHeaders(msg values.BalValue, payloadContentType string, headersArg,
 // transportOwnedHeaders are set by Go's transport, and its HTTP/2 transport rejects a request carrying any of them.
 var transportOwnedHeaders = []string{"connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade"}
 
+// removeTransportOwnedHeaders keeps a single `Connection: close`: Go's HTTP/1.1 transport honours it by closing the
+// connection after the response, and its HTTP/2 transport accepts it.
 func removeTransportOwnedHeaders(headers map[string][]string) {
 	for name, vals := range headers {
 		lower := strings.ToLower(name)
-		if slices.Contains(transportOwnedHeaders, lower) || lower == "te" && !onlyTrailers(vals) {
+		switch {
+		case lower == "connection" && len(vals) == 1 && strings.EqualFold(strings.TrimSpace(vals[0]), "close"):
+			headers[name] = []string{"close"}
+		case slices.Contains(transportOwnedHeaders, lower) || lower == "te" && !onlyTrailers(vals):
 			delete(headers, name)
 		}
 	}
@@ -1789,34 +1791,6 @@ func mergeHeaderArgs(headers map[string][]string, hdrMap *values.Map) {
 	}
 }
 
-// extractHeaders converts a Ballerina map<string|string[]>? value to Go request headers.
-func extractHeaders(arg values.BalValue) map[string][]string {
-	if arg == nil {
-		return nil
-	}
-	hdrMap, ok := arg.(*values.Map)
-	if !ok {
-		return nil
-	}
-	result := make(map[string][]string, hdrMap.Len())
-	for _, key := range hdrMap.Keys() {
-		val, _ := hdrMap.Get(key)
-		switch v := val.(type) {
-		case string:
-			result[key] = []string{v}
-		case *values.List:
-			strs := make([]string, v.Len())
-			for i := range v.Len() {
-				if s, ok := v.Get(i).(string); ok {
-					strs[i] = s
-				}
-			}
-			result[key] = strs
-		}
-	}
-	return result
-}
-
 // responseMethodKeys lists every public Response instance method (excluding initNative,
 // which only applies to `new http:Response()`), keyed by name, pointing at its qualified
 // BIR lookup key. Shared by responseClassDef's VTable and buildResponse (for responses
@@ -1842,7 +1816,11 @@ func responseMethodKeys() map[string]string { return responseMethodKeyCache }
 func buildResponse(tc semtypes.Context, responseTy semtypes.SemType, statusCode int, respHeaders map[string][]string, bodyStream io.ReadCloser) *values.Object {
 	bodyStream = decompressResponseBody(respHeaders, bodyStream)
 	headersMap := newMappingValue()
+	server := ""
 	for k, vals := range respHeaders {
+		if server == "" && len(vals) > 0 && strings.EqualFold(k, "server") {
+			server = vals[0]
+		}
 		items := make([]values.BalValue, len(vals))
 		for i, v := range vals {
 			items[i] = v
@@ -1850,13 +1828,6 @@ func buildResponse(tc semtypes.Context, responseTy semtypes.SemType, statusCode 
 		headersMap.Put(tc, strings.ToLower(k), newListValue(items))
 	}
 	holder := eagerBufferResponse(respHeaders, bodyStream)
-	server := ""
-	for k, vals := range respHeaders {
-		if strings.EqualFold(k, "server") && len(vals) > 0 {
-			server = vals[0]
-			break
-		}
-	}
 	return values.NewObject(
 		responseTy,
 		map[string]values.BalValue{
