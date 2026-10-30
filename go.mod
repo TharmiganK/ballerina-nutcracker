@@ -30,6 +30,7 @@ require (
 	github.com/spf13/afero v1.15.0
 	golang.org/x/crypto v0.54.0
 	golang.org/x/tools v0.47.0
+	github.com/mochi-mqtt/server/v2 v2.7.9
 )
 
 require (
@@ -41,6 +42,8 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/jlaffaye/ftp v0.2.4 // indirect
 	github.com/kr/fs v0.1.0 // indirect
+	github.com/gorilla/websocket v1.5.3 // indirect
+	github.com/rs/xid v1.4.0 // indirect
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
