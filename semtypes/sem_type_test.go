@@ -31,7 +31,7 @@ func TestInstanceKey(t *testing.T) {
 	if ty.InstanceKey() == Union(StringConst("b"), Int).InstanceKey() {
 		t.Error("different SemTypes should not share an instance key")
 	}
-	if Int.InstanceKey() != Int.InstanceKey() || Int.InstanceKey() == String.InstanceKey() {
+	if Int.InstanceKey() != Union(Int, Int).InstanceKey() || Int.InstanceKey() == String.InstanceKey() {
 		t.Error("basic types should be keyed by their bits")
 	}
 }
