@@ -36,7 +36,7 @@ func (t SemType) subtypeDataList() []properSubtypeData {
 }
 
 // InstanceKey identifies a SemType's representation: copies of one value share a key, but equal types
-// built separately do not, so it serves only as a cache key in front of a type-equality check.
+// built separately may not, so it serves only as a cache key in front of a type-equality check.
 type InstanceKey struct {
 	allBits  basicTypeBitSet
 	someBits basicTypeBitSet

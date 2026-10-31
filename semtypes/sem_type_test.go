@@ -19,6 +19,7 @@ package semtypes
 import "testing"
 
 func TestInstanceKey(t *testing.T) {
+	t.Parallel()
 	ty := Union(StringConst("a"), Int)
 	copied := ty
 	if ty.InstanceKey() != copied.InstanceKey() {
