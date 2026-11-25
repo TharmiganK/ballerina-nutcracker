@@ -84,6 +84,7 @@ func TestBalCLI(t *testing.T) {
 		{"BalTestCorpus", testBalTestCorpus},
 		{"BalTestFlagsCorpus", testBalTestFlagsCorpus},
 		{"BalTestStepsCorpus", testBalTestStepsCorpus},
+		{"BalStdlibTests", testBalStdlibTests},
 		{"BalPackCorpus", testBalPackCorpus},
 		{"BalPackCorpus_IncludeField", testBalPackCorpus_IncludeField},
 		{"BalPackCorpus_InvalidIncludePattern", testBalPackCorpus_InvalidIncludePattern},
